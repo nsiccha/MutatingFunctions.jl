@@ -1,0 +1,7 @@
+name = "MutatingFunctions"
+uuid = "8a4c2d94-4b3b-4f9e-be63-a3c0cd816e3a"
+authors = ["Nikolas Siccha <nikolassiccha@gmail.com>"]
+version = "0.1.0"
+
+[compat]
+julia = "1.10"
