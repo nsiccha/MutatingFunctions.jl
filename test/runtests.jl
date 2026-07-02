@@ -1,4 +1,5 @@
 using MutatingFunctions, Test
+using LinearAlgebra
 using Statistics: quantile
 
 @testset "MutatingFunctions" begin
@@ -43,5 +44,20 @@ using Statistics: quantile
         @test apply!!(c, copy, [4.0, 5.0]) === c && c == [4.0, 5.0]
         @test apply!!(c, broadcast, +, [1.0, 2.0, 3.0], [10.0, 20.0, 30.0]) === c &&
               c == [11.0, 22.0, 33.0]
+    end
+
+    @testset "LinearAlgebra extension" begin
+        A = [2.0 0.0; 0.0 3.0]
+        b = [1.0, 2.0]
+        c = zeros(2)
+        @test apply!!(c, *, A, b) === c && c == A * b
+
+        c2 = zeros(2)
+        @test apply!!(c2, \, A, b) === c2 && c2 ≈ A \ b
+
+        C = [4.0 0.0; 0.0 6.0]
+        D = [2.0 0.0; 0.0 3.0]
+        c3 = zeros(2, 2)
+        @test apply!!(c3, /, C, D) === c3 && c3 ≈ C / D
     end
 end

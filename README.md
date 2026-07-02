@@ -32,6 +32,9 @@ apply!!(c, zeros, 3)         # resize!(c, 3); fill!(c, 0); c  (reuses c)
 | `collect`        | `copyto!`                       | skips the intermediate `collect` allocation    |
 | `copy`           | `copyto!`                       |                                                |
 | `broadcast`      | `broadcast!`                    | sized from the broadcast shape                 |
+| `*`              | `mul!`                          | LinearAlgebra extension; `cache` pre-sized     |
+| `\`              | `ldiv!` against `lu(A)`         | LinearAlgebra extension; `cache` pre-sized     |
+| `/`              | copy + `rdiv!` against `lu(B)`  | LinearAlgebra extension; `cache` pre-sized     |
 | `quantile`       | `quantile!`                     | Statistics extension; **sorts** `v`, like Base |
 
 Unregistered functions fall back to a best-effort copy into `cache` (the
