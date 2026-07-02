@@ -1,5 +1,6 @@
 using MutatingFunctions, Test
 using LinearAlgebra
+using Random
 using Statistics: quantile
 
 @testset "MutatingFunctions" begin
@@ -59,5 +60,11 @@ using Statistics: quantile
         D = [2.0 0.0; 0.0 3.0]
         c3 = zeros(2, 2)
         @test apply!!(c3, /, C, D) === c3 && c3 ≈ C / D
+    end
+
+    @testset "Random extension" begin
+        c = Float64[]
+        @test apply!!(c, rand, 5) === c && length(c) == 5 && all(0 .<= c .<= 1)
+        @test apply!!(c, randn, 3) === c && length(c) == 3
     end
 end

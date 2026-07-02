@@ -35,6 +35,8 @@ apply!!(c, zeros, 3)         # resize!(c, 3); fill!(c, 0); c  (reuses c)
 | `*`              | `mul!`                          | LinearAlgebra extension; `cache` pre-sized     |
 | `\`              | `ldiv!` against `lu(A)`         | LinearAlgebra extension; `cache` pre-sized     |
 | `/`              | copy + `rdiv!` against `lu(B)`  | LinearAlgebra extension; `cache` pre-sized     |
+| `rand`           | `rand!`                         | Random extension                               |
+| `randn`          | `randn!`                        | Random extension                               |
 | `quantile`       | `quantile!`                     | Statistics extension; **sorts** `v`, like Base |
 
 Unregistered functions fall back to a best-effort copy into `cache` (the
