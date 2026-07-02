@@ -5,16 +5,16 @@ Map allocating functions to their mutating, cache-filling counterparts —
 mutation.
 
 ```julia
-forward(cache, f, args...; kwargs...)
+apply!(cache, f, args...; kwargs...)
 ```
 
 - `cache === nothing` → the ordinary allocating call `f(args...)`.
 - otherwise → reuse `cache` as preallocated storage, returning the filled `cache`.
 
 ```julia
-forward(nothing, zeros, 3)   # zeros(3)                      (allocates)
+apply!(nothing, zeros, 3)   # zeros(3)                      (allocates)
 c = Float64[]
-forward(c, zeros, 3)         # resize!(c, 3); fill!(c, 0); c  (reuses c)
+apply!(c, zeros, 3)         # resize!(c, 3); fill!(c, 0); c  (reuses c)
 ```
 
 ## Registered functions
@@ -33,7 +33,7 @@ straight through.
 ## Opt in
 
 ```julia
-MutatingFunctions.forward(cache::AbstractVector, ::typeof(myfun), args...) =
+MutatingFunctions.apply!(cache::AbstractVector, ::typeof(myfun), args...) =
     (resize!(cache, n); myfun!(cache, args...); cache)
 ```
 
