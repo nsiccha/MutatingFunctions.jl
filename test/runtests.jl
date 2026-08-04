@@ -67,4 +67,32 @@ using Statistics: quantile
         @test apply!!(c, rand, 5) === c && length(c) == 5 && all(0 .<= c .<= 1)
         @test apply!!(c, randn, 3) === c && length(c) == 3
     end
+
+    @testset "N-D broadcast fills any-rank cache in place" begin
+        # Matrix cache: the generic fallback used to ignore it and allocate;
+        # now it fills in place.
+        tau = [2.0, 3.0]
+        M = reshape(collect(1.0:10.0), 2, 5)
+        cm = zeros(2, 5)
+        @test apply!!(cm, broadcast, *, tau, M) === cm && cm == tau .* M
+        # 3-arg fused vector broadcast fills the same buffer
+        cv = zeros(4)
+        @test apply!!(cv, broadcast, (x, y, z) -> x*y + z,
+                      [1.0, 2.0, 3.0, 4.0], [10.0, 20.0, 30.0, 40.0],
+                      [1.0, 1.0, 1.0, 1.0]) === cv && cv == [11.0, 41.0, 91.0, 161.0]
+        # vector resize-to-fit convenience is preserved
+        c = Float64[]
+        @test apply!!(c, broadcast, +, [1.0, 2.0, 3.0], [10.0, 20.0, 30.0]) === c &&
+              c == [11.0, 22.0, 33.0]
+    end
+
+    @testset "gather (getindex) fills cache in place" begin
+        A = collect(10.0:2.0:30.0)          # 11 elements
+        c = Float64[]
+        @test apply!!(c, getindex, A, [3, 1, 5, 2]) === c && c == A[[3, 1, 5, 2]]
+        # range and boolean-mask indices size the cache correctly
+        @test apply!!(c, getindex, A, 2:4) === c && c == A[2:4]
+        mask = falses(length(A)); mask[[1, 6, 11]] .= true
+        @test apply!!(c, getindex, A, mask) === c && c == A[mask]
+    end
 end
