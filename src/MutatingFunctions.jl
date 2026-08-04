@@ -69,9 +69,32 @@ apply!!(cache::AbstractVector, ::typeof(collect), itr) =
 apply!!(cache::AbstractVector, ::typeof(copy), A) =
     (resize!(cache, length(A)); copyto!(cache, A); cache)
 
-# `broadcast` materializes straight into `cache`, sized from the broadcast shape.
+# `broadcast` materializes straight into `cache`. `broadcast!` writes in place
+# and validates the shape itself, so a correctly-sized `cache` of *any* rank
+# (Matrix / N-D, not just Vector) is filled with zero allocation.
+apply!!(cache::AbstractArray, ::typeof(broadcast), f, args...) =
+    (broadcast!(f, cache, args...); cache)
+# Vector keeps the resize-to-fit convenience (an empty/mis-sized buffer grows
+# to match), but sizes the buffer from the argument lengths directly rather than
+# materializing `Broadcast.combine_axes` — the latter allocates for ≥3-arg and
+# scalar-containing broadcasts, so skipping it keeps the pre-sized hot path (a
+# no-op `resize!`) allocation-free. `broadcast!` still validates compatibility.
 apply!!(cache::AbstractVector, ::typeof(broadcast), f, args...) =
-    (resize!(cache, length(Broadcast.combine_axes(args...)[1]));
+    (n = _broadcast_length(args...); length(cache) == n || resize!(cache, n);
      broadcast!(f, cache, args...); cache)
+# 1-D broadcast length = the longest array argument (scalars broadcast to it);
+# an isbits fold, so it allocates nothing.
+@inline _broadcast_length(args...) = _broadcast_length(1, args...)
+@inline _broadcast_length(n::Int) = n
+@inline _broadcast_length(n::Int, a, rest...) =
+    _broadcast_length(a isa AbstractArray ? max(n, length(a)) : n, rest...)
+
+# `getindex` gather (`A[idx]`, e.g. the `b[group]` gather ubiquitous in
+# hierarchical models). `@view A[idx]` is a non-copying gathered view, so
+# `copyto!` into the pre-sized `cache` skips the intermediate the generic
+# fallback would allocate. Size from the view (correct for integer *and* mask
+# indices) and keep the resize-to-fit convenience of the other vector forms.
+apply!!(cache::AbstractVector, ::typeof(getindex), A, idx::AbstractVector) =
+    (v = @view(A[idx]); resize!(cache, length(v)); copyto!(cache, v); cache)
 
 end # module
