@@ -94,5 +94,20 @@ using Statistics: quantile
         @test apply!!(c, getindex, A, 2:4) === c && c == A[2:4]
         mask = falses(length(A)); mask[[1, 6, 11]] .= true
         @test apply!!(c, getindex, A, mask) === c && c == A[mask]
+
+        # SubArray source — the load-bearing PPL case `b = @view θ[lo:hi]; b[group]`.
+        # A composed view-of-a-view used to make plain `AutoEnzyme` throw
+        # `EnzymeRuntimeActivityError`; the elementwise gather reads scalars and
+        # differentiates cleanly. Cover integer, range and boolean-mask indices.
+        v = @view A[2:8]                    # 7-element SubArray into A
+        @test apply!!(c, getindex, v, [3, 1, 5, 2]) === c && c == v[[3, 1, 5, 2]]
+        @test apply!!(c, getindex, v, 2:4) === c && c == v[2:4]
+        vmask = falses(length(v)); vmask[[1, 4, 7]] .= true
+        @test apply!!(c, getindex, v, vmask) === c && c == v[vmask]
+        # BitVector and Vector{Bool} masks both dispatch to the mask form
+        @test apply!!(c, getindex, A, Bool[i in (1, 6, 11) for i in 1:length(A)]) === c &&
+              c == A[mask]
+        # a wrong-length mask is a DimensionMismatch, not a silent bad gather
+        @test_throws DimensionMismatch apply!!(c, getindex, A, falses(length(A) - 1))
     end
 end

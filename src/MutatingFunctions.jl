@@ -90,11 +90,34 @@ apply!!(cache::AbstractVector, ::typeof(broadcast), f, args...) =
     _broadcast_length(a isa AbstractArray ? max(n, length(a)) : n, rest...)
 
 # `getindex` gather (`A[idx]`, e.g. the `b[group]` gather ubiquitous in
-# hierarchical models). `@view A[idx]` is a non-copying gathered view, so
-# `copyto!` into the pre-sized `cache` skips the intermediate the generic
-# fallback would allocate. Size from the view (correct for integer *and* mask
-# indices) and keep the resize-to-fit convenience of the other vector forms.
-apply!!(cache::AbstractVector, ::typeof(getindex), A, idx::AbstractVector) =
-    (v = @view(A[idx]); resize!(cache, length(v)); copyto!(cache, v); cache)
+# hierarchical models). Read the gather ELEMENTWISE from `A` rather than
+# materializing `@view(A[idx])` + `copyto!`: when `A` is itself a `SubArray`
+# (the load-bearing `b = @view θ[lo:hi]; b[group]` PPL case), the composed
+# view-of-a-view folds the constant `idx` arithmetic into the differentiable
+# store, and plain `AutoEnzyme`'s static activity analysis then throws
+# `EnzymeRuntimeActivityError`. The scalar read keeps the constant index
+# arithmetic out of the differentiable store, so it differentiates like a
+# native elementwise copy — and it allocates nothing (the view form built a
+# `SubArray` per call). Integer indices size the cache from `length(idx)`; a
+# boolean mask sizes from `count(idx)` and streams the selected elements (its
+# output length is the number of set bits, NOT `length(idx)`). Both keep the
+# resize-to-fit convenience of the other vector forms.
+function apply!!(cache::AbstractVector, ::typeof(getindex), A, idx::AbstractVector{<:Integer})
+    resize!(cache, length(idx))
+    for (i, j) in enumerate(idx)
+        cache[i] = A[j]
+    end
+    cache
+end
+function apply!!(cache::AbstractVector, ::typeof(getindex), A, idx::AbstractVector{Bool})
+    length(idx) == length(A) ||
+        throw(DimensionMismatch("boolean gather mask has length $(length(idx)), expected $(length(A))"))
+    resize!(cache, count(idx))
+    k = 0
+    for (i, on) in enumerate(idx)
+        on && (cache[k += 1] = A[i])
+    end
+    cache
+end
 
 end # module
