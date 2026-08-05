@@ -110,4 +110,51 @@ using Statistics: quantile
         # a wrong-length mask is a DimensionMismatch, not a silent bad gather
         @test_throws DimensionMismatch apply!!(c, getindex, A, falses(length(A) - 1))
     end
+
+    @testset "already-sized view destination fills in place (no resize!)" begin
+        # A `SubArray`/`@view` has no `resize!` method, so every resize-to-fit
+        # form used to throw `MethodError: resize!(::SubArray, ::Int)` even when
+        # the view was ALREADY the right length. It must now fill in place — the
+        # load-bearing case is a single flat backing array handing out contiguous
+        # views as pooled buffers (one Enzyme shadow array instead of N).
+        flat = zeros(20)
+        v(lo, hi) = @view flat[lo:hi]   # a correctly-sized view into the backing array
+
+        # generic fallback (unregistered f returning a Vector)
+        myf(x) = x .+ 1
+        c = v(1, 3); @test apply!!(c, myf, [1.0, 2.0, 3.0]) === c && c == [2.0, 3.0, 4.0]
+
+        # zeros / ones / fill
+        c = v(1, 3); @test apply!!(c, zeros, 3) === c && c == zeros(3)
+        c = v(1, 2); @test apply!!(c, ones, 2) === c && c == ones(2)
+        c = v(1, 4); @test apply!!(c, fill, 7.0, 4) === c && c == fill(7.0, 4)
+
+        # map
+        c = v(1, 3); @test apply!!(c, map, x -> 2x, [1.0, 2.0, 3.0]) === c && c == [2.0, 4.0, 6.0]
+
+        # sort / reverse
+        c = v(1, 3); @test apply!!(c, sort, [3.0, 1.0, 2.0]) === c && c == [1.0, 2.0, 3.0]
+        c = v(1, 3); @test apply!!(c, reverse, [1.0, 2.0, 3.0]) === c && c == [3.0, 2.0, 1.0]
+
+        # cumsum / cumprod / accumulate
+        c = v(1, 3); @test apply!!(c, cumsum, [1.0, 2.0, 3.0]) === c && c == [1.0, 3.0, 6.0]
+        c = v(1, 3); @test apply!!(c, cumprod, [1.0, 2.0, 3.0]) === c && c == [1.0, 2.0, 6.0]
+        c = v(1, 3); @test apply!!(c, accumulate, +, [1.0, 2.0, 3.0]) === c && c == [1.0, 3.0, 6.0]
+
+        # collect / copy
+        c = v(1, 3); @test apply!!(c, collect, 1.0:3.0) === c && c == [1.0, 2.0, 3.0]
+        c = v(1, 2); @test apply!!(c, copy, [4.0, 5.0]) === c && c == [4.0, 5.0]
+
+        # broadcast (Vector and N-D views)
+        c = v(1, 3); @test apply!!(c, broadcast, +, [1.0, 2.0, 3.0], [4.0, 5.0, 6.0]) === c &&
+              c == [5.0, 7.0, 9.0]
+        M = zeros(4, 4); cm = @view M[1:2, 1:2]
+        @test apply!!(cm, broadcast, +, [1.0 2.0; 3.0 4.0], [10.0 20.0; 30.0 40.0]) === cm &&
+              cm == [11.0 22.0; 33.0 44.0]
+
+        # getindex gather (integer + boolean mask), the snag's second repro
+        A = [10.0, 20.0, 30.0, 40.0]
+        c = v(1, 3); @test apply!!(c, getindex, A, [2, 4, 1]) === c && c == [20.0, 40.0, 10.0]
+        c = v(1, 2); @test apply!!(c, getindex, A, Bool[1, 0, 1, 0]) === c && c == [10.0, 30.0]
+    end
 end

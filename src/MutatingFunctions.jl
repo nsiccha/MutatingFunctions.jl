@@ -19,12 +19,19 @@ Functions without a registered form fall back to a best-effort copy into `cache`
 (the persistent buffer is reused; `f` still allocates its result); scalar results
 pass straight through.
 
+A destination of the correct length that has no `resize!` method — a `SubArray`
+(`@view`) backing a single-flat buffer pool — is filled in place: every form
+grows `cache` only when its length does not already match (see `_resize!`).
+
 # Examples
 ```julia
 apply!!(nothing, zeros, 3)      # zeros(3)                      (allocates)
 
 c = Float64[]
 apply!!(c, zeros, 3) === c      # true — resize!(c, 3); fill!(c, 0); return c
+
+flat = zeros(10)
+apply!!(@view(flat[1:3]), zeros, 3)   # fills the view in place — no resize! needed
 ```
 """
 apply!!(::Nothing, f, args...; kwargs...) = f(args...; kwargs...)
@@ -33,41 +40,51 @@ apply!!(::Nothing, f, args...; kwargs...) = f(args...; kwargs...)
 # `cache` as storage where the shapes line up, otherwise return the result as-is.
 apply!!(cache, f, args...; kwargs...) = _store!(cache, f(args...; kwargs...))
 
+# Grow `cache` to length `n` ONLY when it is not already that length. A growable
+# `Vector` still grows to fit (and `resize!(v, length(v))` was already a no-op, so
+# guarding it changes nothing for the existing grow-to-fit callers), while an
+# already-correctly-sized destination with no `resize!` method — a `SubArray`
+# (`@view`) into a single flat backing array, the load-bearing buffer-pool case —
+# is filled in place instead of throwing `MethodError: no method matching
+# resize!(::SubArray, ::Int)`. This is the guard the `broadcast` vector form has
+# used since it was added; every resize-to-fit form now shares it.
+@inline _resize!(cache, n) = (length(cache) == n || resize!(cache, n); cache)
+
 _store!(cache::AbstractVector, r::AbstractVector) =
-    (resize!(cache, length(r)); copyto!(cache, r); cache)
+    (_resize!(cache, length(r)); copyto!(cache, r); cache)
 _store!(_, r) = r   # scalar / shape-mismatched result → passthrough
 
 # --- registered mutating forms (avoid the allocation entirely) ----------------
 apply!!(cache::AbstractVector, ::typeof(zeros), n::Integer) =
-    (resize!(cache, n); fill!(cache, zero(eltype(cache))); cache)
+    (_resize!(cache, n); fill!(cache, zero(eltype(cache))); cache)
 apply!!(cache::AbstractVector, ::typeof(ones), n::Integer) =
-    (resize!(cache, n); fill!(cache, one(eltype(cache))); cache)
+    (_resize!(cache, n); fill!(cache, one(eltype(cache))); cache)
 apply!!(cache::AbstractVector, ::typeof(fill), v, n::Integer) =
-    (resize!(cache, n); fill!(cache, v); cache)
+    (_resize!(cache, n); fill!(cache, v); cache)
 apply!!(cache::AbstractVector, ::typeof(map), f, cs...) =
-    (resize!(cache, length(first(cs))); map!(f, cache, cs...); cache)
+    (_resize!(cache, length(first(cs))); map!(f, cache, cs...); cache)
 
 # `sort`/`reverse` have no direct 2-buffer mutating form — copy into `cache`,
 # then mutate `cache` in place with the `!` counterpart.
 apply!!(cache::AbstractVector, ::typeof(sort), A; kwargs...) =
-    (resize!(cache, length(A)); copyto!(cache, A); sort!(cache; kwargs...); cache)
+    (_resize!(cache, length(A)); copyto!(cache, A); sort!(cache; kwargs...); cache)
 apply!!(cache::AbstractVector, ::typeof(reverse), A) =
-    (resize!(cache, length(A)); copyto!(cache, A); reverse!(cache); cache)
+    (_resize!(cache, length(A)); copyto!(cache, A); reverse!(cache); cache)
 
 # `cumsum`/`cumprod`/`accumulate` have a genuine 2-buffer mutating form — no copy needed.
 apply!!(cache::AbstractVector, ::typeof(cumsum), A; kwargs...) =
-    (resize!(cache, length(A)); cumsum!(cache, A; kwargs...); cache)
+    (_resize!(cache, length(A)); cumsum!(cache, A; kwargs...); cache)
 apply!!(cache::AbstractVector, ::typeof(cumprod), A; kwargs...) =
-    (resize!(cache, length(A)); cumprod!(cache, A; kwargs...); cache)
+    (_resize!(cache, length(A)); cumprod!(cache, A; kwargs...); cache)
 apply!!(cache::AbstractVector, ::typeof(accumulate), op, A; kwargs...) =
-    (resize!(cache, length(A)); accumulate!(op, cache, A; kwargs...); cache)
+    (_resize!(cache, length(A)); accumulate!(op, cache, A; kwargs...); cache)
 
 # `collect`/`copy` skip the intermediate allocation the generic fallback would
 # otherwise pay for (calling `f` first, then copying its result into `cache`).
 apply!!(cache::AbstractVector, ::typeof(collect), itr) =
-    (resize!(cache, length(itr)); copyto!(cache, itr); cache)
+    (_resize!(cache, length(itr)); copyto!(cache, itr); cache)
 apply!!(cache::AbstractVector, ::typeof(copy), A) =
-    (resize!(cache, length(A)); copyto!(cache, A); cache)
+    (_resize!(cache, length(A)); copyto!(cache, A); cache)
 
 # `broadcast` materializes straight into `cache`. `broadcast!` writes in place
 # and validates the shape itself, so a correctly-sized `cache` of *any* rank
@@ -80,8 +97,7 @@ apply!!(cache::AbstractArray, ::typeof(broadcast), f, args...) =
 # scalar-containing broadcasts, so skipping it keeps the pre-sized hot path (a
 # no-op `resize!`) allocation-free. `broadcast!` still validates compatibility.
 apply!!(cache::AbstractVector, ::typeof(broadcast), f, args...) =
-    (n = _broadcast_length(args...); length(cache) == n || resize!(cache, n);
-     broadcast!(f, cache, args...); cache)
+    (_resize!(cache, _broadcast_length(args...)); broadcast!(f, cache, args...); cache)
 # 1-D broadcast length = the longest array argument (scalars broadcast to it);
 # an isbits fold, so it allocates nothing.
 @inline _broadcast_length(args...) = _broadcast_length(1, args...)
@@ -103,7 +119,7 @@ apply!!(cache::AbstractVector, ::typeof(broadcast), f, args...) =
 # output length is the number of set bits, NOT `length(idx)`). Both keep the
 # resize-to-fit convenience of the other vector forms.
 function apply!!(cache::AbstractVector, ::typeof(getindex), A, idx::AbstractVector{<:Integer})
-    resize!(cache, length(idx))
+    _resize!(cache, length(idx))
     for (i, j) in enumerate(idx)
         cache[i] = A[j]
     end
@@ -112,7 +128,7 @@ end
 function apply!!(cache::AbstractVector, ::typeof(getindex), A, idx::AbstractVector{Bool})
     length(idx) == length(A) ||
         throw(DimensionMismatch("boolean gather mask has length $(length(idx)), expected $(length(A))"))
-    resize!(cache, count(idx))
+    _resize!(cache, count(idx))
     k = 0
     for (i, on) in enumerate(idx)
         on && (cache[k += 1] = A[i])
