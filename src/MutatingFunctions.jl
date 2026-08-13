@@ -1,5 +1,9 @@
 module MutatingFunctions
 
+import LinearAlgebra: AbstractVecOrMat, mul!, ldiv!, rdiv!, lu
+import Random: rand, randn, rand!, randn!
+import Statistics
+
 export apply!!
 
 """
@@ -135,5 +139,33 @@ function apply!!(cache::AbstractVector, ::typeof(getindex), A, idx::AbstractVect
     end
     cache
 end
+
+# --- LinearAlgebra -----------------------------------------------------------
+# A * B → mul!(cache, A, B); `cache` must already be sized to the result shape
+# (mul! never resizes — the same pre-sized convention `mul!` itself expects).
+apply!!(cache::AbstractVecOrMat, ::typeof(*), A, B) = (mul!(cache, A, B); cache)
+
+# A \ B → ldiv!(cache, lu(A), B). Plain dense `A` has no 3-arg `ldiv!` of its
+# own (Base's generic 3-arg form needs a `Factorization`); `lu(A)` still
+# allocates the factors, but the *solution* goes straight into `cache`.
+apply!!(cache::AbstractVecOrMat, ::typeof(\), A, B) =
+    (ldiv!(cache, lu(A), B); cache)
+
+# A / B → same story, rotated: copy `A` into `cache`, then `rdiv!` against `lu(B)`.
+apply!!(cache::AbstractVecOrMat, ::typeof(/), A, B) =
+    (copyto!(cache, A); rdiv!(cache, lu(B)); cache)
+
+# --- Random ------------------------------------------------------------------
+# rand(n) / randn(n) → resize `cache` to `n`, then fill it in place.
+apply!!(cache::AbstractVector, ::typeof(rand), n::Integer) =
+    (resize!(cache, n); rand!(cache); cache)
+apply!!(cache::AbstractVector, ::typeof(randn), n::Integer) =
+    (resize!(cache, n); randn!(cache); cache)
+
+# --- Statistics --------------------------------------------------------------
+# quantile(v, p::AbstractVector) → a vector of quantiles, written into `cache`.
+# Note: `quantile!` SORTS `v` in place (the mutating contract), exactly like Base.
+apply!!(cache::AbstractVector, ::typeof(Statistics.quantile), v, p::AbstractVector) =
+    (resize!(cache, length(p)); Statistics.quantile!(cache, v, p); cache)
 
 end # module
