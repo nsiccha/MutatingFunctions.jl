@@ -32,16 +32,23 @@ apply!!(c, zeros, 3)         # resize!(c, 3); fill!(c, 0); c  (reuses c)
 | `collect`        | `copyto!`                       | skips the intermediate `collect` allocation    |
 | `copy`           | `copyto!`                       |                                                |
 | `broadcast`      | `broadcast!`                    | sized from the broadcast shape                 |
-| `*`              | `mul!`                          | LinearAlgebra extension; `cache` pre-sized     |
-| `\`              | `ldiv!` against `lu(A)`         | LinearAlgebra extension; `cache` pre-sized     |
-| `/`              | copy + `rdiv!` against `lu(B)`  | LinearAlgebra extension; `cache` pre-sized     |
-| `rand`           | `rand!`                         | Random extension                               |
-| `randn`          | `randn!`                        | Random extension                               |
-| `quantile`       | `quantile!`                     | Statistics extension; **sorts** `v`, like Base |
+| `*`              | `mul!`                          | LinearAlgebra; `cache` pre-sized               |
+| `\`              | `ldiv!` against `lu(A)`         | LinearAlgebra; `cache` pre-sized               |
+| `/`              | copy + `rdiv!` against `lu(B)`  | LinearAlgebra; `cache` pre-sized               |
+| `rand`           | `rand!`                         | Random                                         |
+| `randn`          | `randn!`                        | Random                                         |
+| `quantile`       | `quantile!`                     | Statistics; **sorts** `v`, like Base           |
 
 Unregistered functions fall back to a best-effort copy into `cache` (the
 persistent buffer is reused; `f` still allocates its result); scalar results pass
 straight through.
+
+`LinearAlgebra`, `Random` and `Statistics` are ordinary (strong) dependencies of
+this package — there are **no package extensions**, so every form above is defined
+as soon as `using MutatingFunctions` runs. (They were three extensions until
+`771b58b`; the split was dropped because Pkg 1.10's parallel precompile
+self-deadlocks on sibling extensions whose triggers are sysimage stdlibs, and on
+Julia 1.10 those stdlibs are always loaded anyway.)
 
 ## Opt in
 
