@@ -184,5 +184,12 @@ using Statistics: quantile
         A = [10.0, 20.0, 30.0, 40.0]
         c = v(1, 3); @test apply!!(c, getindex, A, [2, 4, 1]) === c && c == [20.0, 40.0, 10.0]
         c = v(1, 2); @test apply!!(c, getindex, A, Bool[1, 0, 1, 0]) === c && c == [10.0, 30.0]
+
+        # rand / randn / quantile — the last resize-to-fit forms; a sized view
+        # destination must fill in place, not throw resize!(::SubArray, ::Int)
+        c = v(1, 5); @test apply!!(c, rand, 5) === c && length(c) == 5 && all(0 .<= c .<= 1)
+        c = v(1, 3); @test apply!!(c, randn, 3) === c && length(c) == 3
+        c = v(1, 3); p = [0.25, 0.5, 0.75]
+        @test apply!!(c, quantile, collect(1.0:4.0), p) === c && c == quantile(1.0:4.0, p)
     end
 end

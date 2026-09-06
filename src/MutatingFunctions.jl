@@ -194,14 +194,14 @@ apply!!(cache::AbstractVecOrMat, ::typeof(/), A, B) =
 # --- Random ------------------------------------------------------------------
 # rand(n) / randn(n) → resize `cache` to `n`, then fill it in place.
 apply!!(cache::AbstractVector, ::typeof(rand), n::Integer) =
-    (resize!(cache, n); rand!(cache); cache)
+    (_resize!(cache, n); rand!(cache); cache)
 apply!!(cache::AbstractVector, ::typeof(randn), n::Integer) =
-    (resize!(cache, n); randn!(cache); cache)
+    (_resize!(cache, n); randn!(cache); cache)
 
 # --- Statistics --------------------------------------------------------------
 # quantile(v, p::AbstractVector) → a vector of quantiles, written into `cache`.
 # Note: `quantile!` SORTS `v` in place (the mutating contract), exactly like Base.
 apply!!(cache::AbstractVector, ::typeof(Statistics.quantile), v, p::AbstractVector) =
-    (resize!(cache, length(p)); Statistics.quantile!(cache, v, p); cache)
+    (_resize!(cache, length(p)); Statistics.quantile!(cache, v, p); cache)
 
 end # module
