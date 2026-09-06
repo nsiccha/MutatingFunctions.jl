@@ -140,6 +140,42 @@ function apply!!(cache::AbstractVector, ::typeof(getindex), A, idx::AbstractVect
     cache
 end
 
+# Multi-dimensional gather with a leading SCALAR row index into a matrix source
+# (`A[i, idx]`, e.g. the `b[k, group]` per-row gather that dominates a grouped
+# hierarchical model's gradient — three such gathers, `b[1,group]`/`b[2,group]`/
+# `b[3,group]`, are the bulk of its allocation). Without a registered form the
+# generic fallback runs `_store!(cache, getindex(A, i, idx))` — it materializes a
+# fresh vector, then copies it in — so `apply!!` allocates exactly as the plain
+# gather does. Read ELEMENTWISE from `A` instead, exactly as the 1-D form above:
+# the scalar read `A[i, idx[k]]` keeps the constant index arithmetic out of the
+# differentiable store, so a `ReshapedArray` (reshaped-pool-vector) or `SubArray`
+# source differentiates like a native elementwise copy under plain `AutoEnzyme`
+# rather than tripping `EnzymeRuntimeActivityError`, and it allocates nothing.
+# The `{<:Integer}` / `{Bool}` split mirrors the 1-D forms: a boolean mask's
+# output length is the number of set bits, and it selects along `A`'s columns, so
+# it sizes from `count(idx)` and validates against `size(A, 2)`. Both grow via
+# `_resize!`, so an already-sized `@view` destination (the buffer-pool case)
+# fills in place instead of hitting `resize!(::SubArray, ::Int)`.
+function apply!!(cache::AbstractVector, ::typeof(getindex), A::AbstractMatrix,
+                 i::Integer, idx::AbstractVector{<:Integer})
+    _resize!(cache, length(idx))
+    for (k, j) in enumerate(idx)
+        cache[k] = A[i, j]
+    end
+    cache
+end
+function apply!!(cache::AbstractVector, ::typeof(getindex), A::AbstractMatrix,
+                 i::Integer, idx::AbstractVector{Bool})
+    length(idx) == size(A, 2) ||
+        throw(DimensionMismatch("boolean gather mask has length $(length(idx)), expected $(size(A, 2))"))
+    _resize!(cache, count(idx))
+    k = 0
+    for (j, on) in enumerate(idx)
+        on && (cache[k += 1] = A[i, j])
+    end
+    cache
+end
+
 # --- LinearAlgebra -----------------------------------------------------------
 # A * B → mul!(cache, A, B); `cache` must already be sized to the result shape
 # (mul! never resizes — the same pre-sized convention `mul!` itself expects).

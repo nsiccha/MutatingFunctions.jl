@@ -111,6 +111,34 @@ using Statistics: quantile
         @test_throws DimensionMismatch apply!!(c, getindex, A, falses(length(A) - 1))
     end
 
+    @testset "multi-dim gather (getindex A[i, idx]) fills cache in place" begin
+        # scalar row index + vector column index — the `b[k, group]` per-row
+        # gather that dominates a grouped hierarchical model. Cover the three
+        # PPL source types: dense Matrix, ReshapedArray (reshaped pool vector),
+        # SubArray view.
+        Mat  = reshape(collect(1.0:30.0), 3, 10)
+        Resh = reshape(1.0:30.0, 3, 10)                  # Base.ReshapedArray
+        Sub  = @view Mat[:, 2:9]                          # SubArray, 3 x 8
+        idx  = [3, 1, 5, 2, 4]
+        c = Float64[]
+        @test apply!!(c, getindex, Mat, 2, idx) === c && c == Mat[2, idx]
+        @test apply!!(c, getindex, Resh, 3, idx) === c && c == Resh[3, idx]
+        sidx = [1, 4, 2, 8]
+        @test apply!!(c, getindex, Sub, 2, sidx) === c && c == Sub[2, sidx]
+        # range column index sizes the cache correctly
+        @test apply!!(c, getindex, Mat, 1, 2:5) === c && c == Mat[1, 2:5]
+        # boolean column mask: output length is count(mask), sized from size(A, 2)
+        mask = falses(size(Mat, 2)); mask[[1, 5, 10]] .= true
+        @test apply!!(c, getindex, Mat, 3, mask) === c && c == Mat[3, mask]
+        @test apply!!(c, getindex, Resh, 2, mask) === c && c == Resh[2, mask]
+        # a wrong-length column mask is a DimensionMismatch (checked vs size(A, 2))
+        @test_throws DimensionMismatch apply!!(c, getindex, Mat, 1, falses(size(Mat, 2) - 1))
+        # an already-sized view destination fills in place (no resize! on a SubArray)
+        flat = zeros(20)
+        cv = @view flat[1:5]
+        @test apply!!(cv, getindex, Mat, 2, idx) === cv && cv == Mat[2, idx]
+    end
+
     @testset "already-sized view destination fills in place (no resize!)" begin
         # A `SubArray`/`@view` has no `resize!` method, so every resize-to-fit
         # form used to throw `MethodError: resize!(::SubArray, ::Int)` even when
