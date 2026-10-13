@@ -59,3 +59,7 @@ MutatingFunctions.apply!!(cache::AbstractVector, ::typeof(myfun), args...) =
 ```
 
 Status: **early WIP** — no TreeArrays (or any other) dependency; standalone.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
