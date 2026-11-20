@@ -46,7 +46,9 @@ straight through.
 
 `apply!!` is as type stable as the call it makes: every method compiles for its
 call's concrete types, so `apply!!(nothing, f, args...)` dispatches `f(args...)`
-statically whenever `f` and the arguments are concretely typed.
+statically whenever `f` and the arguments are concretely typed. (Past 8
+arguments, an argument that is itself a function or a type is compiled as
+`::Function` or `::Type`; everything else stays concrete.)
 
 `LinearAlgebra`, `Random` and `Statistics` are ordinary (strong) dependencies of
 this package — there are **no package extensions**, so every form above is defined
@@ -62,11 +64,12 @@ MutatingFunctions.apply!!(cache::AbstractVector, ::typeof(myfun), args::Vararg{A
     (resize!(cache, n); myfun!(cache, args...); cache)
 ```
 
-Spell arguments that a form passes on as `args::Vararg{Any,N}` and a function it
-passes on as `f::F` (with `where {F,N}`), as this package's own forms do. Written
-`args...` or an untyped `f`, Julia compiles the method for `Vararg{Any}` once it
-has more than a few arguments and for `f::Function`, and the forwarded call is then
-dispatched at run time.
+Give the arguments a form passes on type parameters, as this package's own forms
+do: `f::F` for a function, `args::Vararg{Any,N}` for a variable number, `a::A`
+for an argument that may itself be a function or a type (all `where {…}`).
+Written `f`, `args...` or an untyped `a`, Julia compiles the method for
+`::Function`, `::Type` and, once it has more than a few arguments,
+`Vararg{Any}`, and the forwarded call is then dispatched at run time.
 
 Status: **early WIP** — no TreeArrays (or any other) dependency; standalone.
 
