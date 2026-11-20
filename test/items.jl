@@ -209,3 +209,93 @@ end
             @test apply!!(c, quantile, collect(1.0:4.0), p) === c && c == quantile(1.0:4.0, p)
         end
 end
+
+@testitem "MutatingFunctions forwarding methods specialize" begin
+    using MutatingFunctions, Test
+
+    # The signature Julia compiles a call with these argument types into (the
+    # method instance a call that is not inlined runs), next to the call's own
+    # concrete signature. `kwbody=true` reads the keyword body the method
+    # forwards a call without keywords to.
+    function compiled_and_called(f, argtypes...; kwbody=false)
+        m = which(f, Tuple{argtypes...})
+        if kwbody
+            body = Base.bodyfunction(m)
+            atype = Tuple{typeof(body), typeof(pairs(NamedTuple())), typeof(f), argtypes...}
+            m = only(methods(body))
+        else
+            atype = Tuple{typeof(f), argtypes...}
+        end
+        env = ccall(:jl_type_intersection_with_env, Any, (Any, Any), atype, m.sig)[2]
+        (Core.Compiler.get_compileable_sig(m, atype, env), atype)
+    end
+    specialized(f, argtypes...; kwargs...) = ==(compiled_and_called(f, argtypes...; kwargs...)...)
+
+    struct Step end            # a callable struct, like a ReactiveKernels step
+    (::Step)(xs...) = first(xs)
+    V, I, M = Vector{Float64}, Vector{Int}, Matrix{Float64}
+    forward(f, args...; kwargs...) = f(args...; kwargs...)   # the spelling the fix replaced
+
+    forward_n(f::F, args::Vararg{Any,N}) where {F,N} = f(args...)
+    @testset "control: an `f, args...` forwarder is compiled for widened types" begin
+        @test !specialized(forward, Step, V, I; kwbody=true)   # … Vector{Float64}, Vararg{Any}
+        @test !specialized(forward, typeof(sum), V)            # f compiled as ::Function
+        # `Vararg{Any,N}` alone still compiles a function or type argument as
+        # `::Function` / `::Type`: the reason for the fixed-arity methods
+        @test !specialized(forward_n, Step, typeof(+), V)
+        @test !specialized(forward_n, Step, Type{Float64}, Int)
+    end
+
+    # array arguments, and arguments that are themselves functions or types
+    arrays(n) = ntuple(k -> isodd(k) ? V : I, n)
+    mixed(n) = ntuple(k -> (V, typeof(+), I, Type{Float64}, Float64, typeof(sin), Step, M)[mod1(k, 8)], n)
+    @testset "apply!!(nothing | cache, f, args...) and its keyword body" begin
+        for C in (Nothing, V), F in (Step, typeof(sum)), args in (arrays.(0:10)..., mixed.(1:8)...)
+            @test specialized(apply!!, C, F, args...)
+            @test specialized(apply!!, C, F, args...; kwbody=true)
+        end
+    end
+
+    @testset "registered forms still win over the forwarding methods" begin
+        # A representative call for each registered form (type variables at their
+        # bound, `Any` as `Float64`, varargs expanded to 1-3 arguments) must still
+        # dispatch to that form, not to a fixed-arity forwarding method.
+        bound(t) = t isa TypeVar ? (t.ub === Any ? Float64 : t.ub) : t
+        nforms = 0
+        for m in methods(apply!!)
+            m.module === MutatingFunctions || continue
+            ps = collect(Base.unwrap_unionall(m.sig).parameters)[2:end]
+            ps[2] isa TypeVar && continue                      # a forwarding method
+            nforms += 1
+            fixed = [bound(p) for p in ps if !(p isa Core.TypeofVararg)]
+            va = filter(p -> p isa Core.TypeofVararg, ps)
+            for extra in (isempty(va) ? (0:0) : (1:3))
+                @test which(apply!!, Tuple{fixed..., fill(Float64, extra)...}) === m
+            end
+        end
+        @test nforms >= 20
+    end
+
+    @testset "the fixed-arity methods compute what the Vararg ones do" begin
+        @test apply!!(nothing, broadcast, +, 1.0, [1.0, 2.0]) == [2.0, 3.0]
+        @test apply!!(nothing, convert, Float64, 3) === 3.0
+        @test apply!!(nothing, map, sin, [0.0]) == [0.0]
+        @test apply!!(nothing, (xs...) -> sum(xs), 1:9...) == 45   # 9 args: the Vararg method
+        @test apply!!(nothing, (x; s=1) -> s * x, 2; s=3) == 6
+        c = Float64[]
+        @test apply!!(c, broadcast, +, 1.0, [1.0, 2.0]) === c && c == [2.0, 3.0]
+        @test apply!!(c, (xs...) -> collect(Float64, xs), 1:9...) === c && c == 1.0:9.0
+    end
+
+    @testset "registered forms that forward a function" begin
+        for n in 1:7
+            @test specialized(apply!!, V, typeof(broadcast), typeof(+), ntuple(_ -> V, n)...)
+            @test specialized(apply!!, M, typeof(broadcast), typeof(+), ntuple(_ -> M, n)...)
+            @test specialized(apply!!, V, typeof(map), typeof(+), ntuple(_ -> V, n)...)
+        end
+        @test specialized(apply!!, V, typeof(accumulate), typeof(+), V)
+        @test specialized(apply!!, V, typeof(accumulate), typeof(+), V; kwbody=true)
+    end
+
+    @test isempty(Test.detect_ambiguities(MutatingFunctions))
+end

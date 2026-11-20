@@ -38,11 +38,37 @@ flat = zeros(10)
 apply!!(@view(flat[1:3]), zeros, 3)   # fills the view in place — no resize! needed
 ```
 """
-apply!!(::Nothing, f, args...; kwargs...) = f(args...; kwargs...)
+apply!!(::Nothing, f::F, args::Vararg{Any,N}; kwargs...) where {F,N} = f(args...; kwargs...)
+
+# Every method that forwards its function and arguments gives them type
+# parameters, so Julia compiles it (and the keyword body a keyword method
+# forwards to) for the call's concrete types. Written `f, args...`, it is
+# compiled for `Vararg{Any}` past a couple of arguments, and for `::Function`
+# (or `::Type`) wherever a function (or a type) is only passed on: `f(args...)`
+# lowers to `Core._apply_iterate(iterate, f, args)`, so neither `f` nor an
+# argument is ever called directly. The forwarded call is then dispatched at run
+# time on every evaluation, which ReactiveKernels' `type_stability = :error`
+# check refuses. `f::F, args::Vararg{Any,N} where {F,N}` fixes `f` and the
+# argument count; an argument that is itself a function or a type needs a type
+# parameter of its own, which only a fixed arity can give: hence the methods for
+# 1 to 8 arguments below, with the `Vararg` methods covering longer calls.
 
 # Generic fallback for a non-`nothing` cache and an unregistered function: reuse
 # `cache` as storage where the shapes line up, otherwise return the result as-is.
-apply!!(cache, f, args...; kwargs...) = _store!(cache, f(args...; kwargs...))
+apply!!(cache, f::F, args::Vararg{Any,N}; kwargs...) where {F,N} =
+    _store!(cache, f(args...; kwargs...))
+
+for n in 1:8
+    as = [Symbol(:a, k) for k in 1:n]
+    Ts = [Symbol(:A, k) for k in 1:n]
+    typed = [:($a::$T) for (a, T) in zip(as, Ts)]
+    @eval begin
+        apply!!(::Nothing, f::F, $(typed...); kwargs...) where {F,$(Ts...)} =
+            f($(as...); kwargs...)
+        apply!!(cache, f::F, $(typed...); kwargs...) where {F,$(Ts...)} =
+            _store!(cache, f($(as...); kwargs...))
+    end
+end
 
 # Grow `cache` to length `n` ONLY when it is not already that length. A growable
 # `Vector` still grows to fit (and `resize!(v, length(v))` was already a no-op, so
@@ -65,7 +91,7 @@ apply!!(cache::AbstractVector, ::typeof(ones), n::Integer) =
     (_resize!(cache, n); fill!(cache, one(eltype(cache))); cache)
 apply!!(cache::AbstractVector, ::typeof(fill), v, n::Integer) =
     (_resize!(cache, n); fill!(cache, v); cache)
-apply!!(cache::AbstractVector, ::typeof(map), f, cs...) =
+apply!!(cache::AbstractVector, ::typeof(map), f::F, cs::Vararg{Any,N}) where {F,N} =
     (_resize!(cache, length(first(cs))); map!(f, cache, cs...); cache)
 
 # `sort`/`reverse` have no direct 2-buffer mutating form — copy into `cache`,
@@ -80,7 +106,7 @@ apply!!(cache::AbstractVector, ::typeof(cumsum), A; kwargs...) =
     (_resize!(cache, length(A)); cumsum!(cache, A; kwargs...); cache)
 apply!!(cache::AbstractVector, ::typeof(cumprod), A; kwargs...) =
     (_resize!(cache, length(A)); cumprod!(cache, A; kwargs...); cache)
-apply!!(cache::AbstractVector, ::typeof(accumulate), op, A; kwargs...) =
+apply!!(cache::AbstractVector, ::typeof(accumulate), op::F, A; kwargs...) where {F} =
     (_resize!(cache, length(A)); accumulate!(op, cache, A; kwargs...); cache)
 
 # `collect`/`copy` skip the intermediate allocation the generic fallback would
@@ -93,14 +119,14 @@ apply!!(cache::AbstractVector, ::typeof(copy), A) =
 # `broadcast` materializes straight into `cache`. `broadcast!` writes in place
 # and validates the shape itself, so a correctly-sized `cache` of *any* rank
 # (Matrix / N-D, not just Vector) is filled with zero allocation.
-apply!!(cache::AbstractArray, ::typeof(broadcast), f, args...) =
+apply!!(cache::AbstractArray, ::typeof(broadcast), f::F, args::Vararg{Any,N}) where {F,N} =
     (broadcast!(f, cache, args...); cache)
 # Vector keeps the resize-to-fit convenience (an empty/mis-sized buffer grows
 # to match), but sizes the buffer from the argument lengths directly rather than
 # materializing `Broadcast.combine_axes` — the latter allocates for ≥3-arg and
 # scalar-containing broadcasts, so skipping it keeps the pre-sized hot path (a
 # no-op `resize!`) allocation-free. `broadcast!` still validates compatibility.
-apply!!(cache::AbstractVector, ::typeof(broadcast), f, args...) =
+apply!!(cache::AbstractVector, ::typeof(broadcast), f::F, args::Vararg{Any,N}) where {F,N} =
     (_resize!(cache, _broadcast_length(args...)); broadcast!(f, cache, args...); cache)
 # 1-D broadcast length = the longest array argument (scalars broadcast to it);
 # an isbits fold, so it allocates nothing.
