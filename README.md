@@ -44,6 +44,10 @@ Unregistered functions fall back to a best-effort copy into `cache` (the
 persistent buffer is reused; `f` still allocates its result); scalar results pass
 straight through.
 
+`apply!!` is as type stable as the call it makes: every method compiles for its
+call's concrete types, so `apply!!(nothing, f, args...)` dispatches `f(args...)`
+statically whenever `f` and the arguments are concretely typed.
+
 `LinearAlgebra`, `Random` and `Statistics` are ordinary (strong) dependencies of
 this package — there are **no package extensions**, so every form above is defined
 as soon as `using MutatingFunctions` runs. (They were three extensions until
@@ -54,9 +58,15 @@ Julia 1.10 those stdlibs are always loaded anyway.)
 ## Opt in
 
 ```julia
-MutatingFunctions.apply!!(cache::AbstractVector, ::typeof(myfun), args...) =
+MutatingFunctions.apply!!(cache::AbstractVector, ::typeof(myfun), args::Vararg{Any,N}) where {N} =
     (resize!(cache, n); myfun!(cache, args...); cache)
 ```
+
+Spell arguments that a form passes on as `args::Vararg{Any,N}` and a function it
+passes on as `f::F` (with `where {F,N}`), as this package's own forms do. Written
+`args...` or an untyped `f`, Julia compiles the method for `Vararg{Any}` once it
+has more than a few arguments and for `f::Function`, and the forwarded call is then
+dispatched at run time.
 
 Status: **early WIP** — no TreeArrays (or any other) dependency; standalone.
 

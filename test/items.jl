@@ -209,3 +209,55 @@ end
             @test apply!!(c, quantile, collect(1.0:4.0), p) === c && c == quantile(1.0:4.0, p)
         end
 end
+
+@testitem "MutatingFunctions forwarding methods specialize" begin
+    using MutatingFunctions, Test
+
+    # The signature Julia compiles a call with these argument types into (the
+    # method instance a call that is not inlined runs), next to the call's own
+    # concrete signature. `kwbody=true` reads the keyword body the method
+    # forwards a call without keywords to.
+    function compiled_and_called(f, argtypes...; kwbody=false)
+        m = which(f, Tuple{argtypes...})
+        if kwbody
+            body = Base.bodyfunction(m)
+            atype = Tuple{typeof(body), typeof(pairs(NamedTuple())), typeof(f), argtypes...}
+            m = only(methods(body))
+        else
+            atype = Tuple{typeof(f), argtypes...}
+        end
+        env = ccall(:jl_type_intersection_with_env, Any, (Any, Any), atype, m.sig)[2]
+        (Core.Compiler.get_compileable_sig(m, atype, env), atype)
+    end
+    specialized(f, argtypes...; kwargs...) = ==(compiled_and_called(f, argtypes...; kwargs...)...)
+
+    struct Step end            # a callable struct, like a ReactiveKernels step
+    (::Step)(xs...) = first(xs)
+    V, I, M = Vector{Float64}, Vector{Int}, Matrix{Float64}
+    forward(f, args...; kwargs...) = f(args...; kwargs...)   # the spelling the fix replaced
+
+    @testset "control: an `f, args...` forwarder is compiled for widened types" begin
+        @test !specialized(forward, Step, V, I; kwbody=true)   # … Vector{Float64}, Vararg{Any}
+        @test !specialized(forward, typeof(sum), V)            # f compiled as ::Function
+    end
+
+    @testset "apply!!(nothing | cache, f, args...) and its keyword body" begin
+        for C in (Nothing, V), F in (Step, typeof(sum)), n in 0:7
+            args = ntuple(k -> isodd(k) ? V : I, n)
+            @test specialized(apply!!, C, F, args...)
+            @test specialized(apply!!, C, F, args...; kwbody=true)
+        end
+    end
+
+    @testset "registered forms that forward a function" begin
+        for n in 1:7
+            @test specialized(apply!!, V, typeof(broadcast), typeof(+), ntuple(_ -> V, n)...)
+            @test specialized(apply!!, M, typeof(broadcast), typeof(+), ntuple(_ -> M, n)...)
+            @test specialized(apply!!, V, typeof(map), typeof(+), ntuple(_ -> V, n)...)
+        end
+        @test specialized(apply!!, V, typeof(accumulate), typeof(+), V)
+        @test specialized(apply!!, V, typeof(accumulate), typeof(+), V; kwbody=true)
+    end
+
+    @test isempty(Test.detect_ambiguities(MutatingFunctions))
+end
