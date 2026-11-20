@@ -38,37 +38,44 @@ flat = zeros(10)
 apply!!(@view(flat[1:3]), zeros, 3)   # fills the view in place — no resize! needed
 ```
 """
-apply!!(::Nothing, f::F, args::Vararg{Any,N}; kwargs...) where {F,N} = f(args...; kwargs...)
+function apply!! end
 
-# Every method that forwards its function and arguments gives them type
-# parameters, so Julia compiles it (and the keyword body a keyword method
-# forwards to) for the call's concrete types. Written `f, args...`, it is
-# compiled for `Vararg{Any}` past a couple of arguments, and for `::Function`
-# (or `::Type`) wherever a function (or a type) is only passed on: `f(args...)`
-# lowers to `Core._apply_iterate(iterate, f, args)`, so neither `f` nor an
-# argument is ever called directly. The forwarded call is then dispatched at run
-# time on every evaluation, which ReactiveKernels' `type_stability = :error`
-# check refuses. `f::F, args::Vararg{Any,N} where {F,N}` fixes `f` and the
-# argument count; an argument that is itself a function or a type needs a type
-# parameter of its own, which only a fixed arity can give: hence the methods for
-# 1 to 8 arguments below, with the `Vararg` methods covering longer calls.
-
-# Generic fallback for a non-`nothing` cache and an unregistered function: reuse
-# `cache` as storage where the shapes line up, otherwise return the result as-is.
-apply!!(cache, f::F, args::Vararg{Any,N}; kwargs...) where {F,N} =
-    _store!(cache, f(args...; kwargs...))
-
-for n in 1:8
-    as = [Symbol(:a, k) for k in 1:n]
-    Ts = [Symbol(:A, k) for k in 1:n]
-    typed = [:($a::$T) for (a, T) in zip(as, Ts)]
-    @eval begin
-        apply!!(::Nothing, f::F, $(typed...); kwargs...) where {F,$(Ts...)} =
-            f($(as...); kwargs...)
-        apply!!(cache, f::F, $(typed...); kwargs...) where {F,$(Ts...)} =
-            _store!(cache, f($(as...); kwargs...))
-    end
-end
+# The two forwarding methods: `nothing` makes the plain call, and the generic
+# fallback (a non-`nothing` cache, a function with no registered form) reuses
+# `cache` as storage where the shapes line up and returns the result as-is
+# otherwise.
+#
+# Each is ONE method, and consumers rely on that: every call no registered form
+# covers resolves to the same `Method`, `which(apply!!, Tuple{Any,Any,Vararg{Any}})`,
+# which is how ReactiveKernels tells a registered destination-passing form (its
+# step keeps a cache slot) from the copy fallback (its step stays a plain call).
+# 0.1.1 split each into a `Vararg` method plus one method per arity up to 8, so a
+# call with 1-8 arguments resolved to a different `Method`: ReactiveKernels then
+# kept a slot for every unregistered step, lazy `broadcasted` and views included,
+# and its non-allocating AD preparation threw converting a later result to the
+# type of the first.
+#
+# Each is also compiled for the call's concrete types, which ReactiveKernels'
+# `type_stability = :error` check requires. Written as an ordinary
+# `f::F, args::Vararg{Any,N}` method, Julia compiles an argument that is itself
+# a function or a type as `::Function` / `::Type`, because `f(args...)` lowers
+# to `Core._apply_iterate(iterate, f, args)` and never calls it, and the
+# forwarded call is then dispatched at run time on every evaluation. A
+# `@generated` method is compiled for exactly the signature it is called with,
+# so the single method below specializes on every argument at every arity.
+# Keyword calls reach `Core.kwcall(kwargs, apply!!, …)`, which an ordinary
+# `; kwargs...` method defines alongside a positional method of the same
+# signature, so the keyword half is the matching generated `Core.kwcall` method.
+@generated apply!!(::Nothing, f::F, args::Vararg{Any,N}) where {F,N} =
+    :(f(args...))
+@generated Core.kwcall(kwargs::NamedTuple, ::typeof(apply!!), ::Nothing,
+                       f::F, args::Vararg{Any,N}) where {F,N} =
+    :(f(args...; kwargs...))
+@generated apply!!(cache, f::F, args::Vararg{Any,N}) where {F,N} =
+    :(_store!(cache, f(args...)))
+@generated Core.kwcall(kwargs::NamedTuple, ::typeof(apply!!), cache,
+                       f::F, args::Vararg{Any,N}) where {F,N} =
+    :(_store!(cache, f(args...; kwargs...)))
 
 # Grow `cache` to length `n` ONLY when it is not already that length. A growable
 # `Vector` still grows to fit (and `resize!(v, length(v))` was already a no-op, so

@@ -46,9 +46,15 @@ straight through.
 
 `apply!!` is as type stable as the call it makes: every method compiles for its
 call's concrete types, so `apply!!(nothing, f, args...)` dispatches `f(args...)`
-statically whenever `f` and the arguments are concretely typed. (Past 8
-arguments, an argument that is itself a function or a type is compiled as
-`::Function` or `::Type`; everything else stays concrete.)
+statically whenever `f` and the arguments are concretely typed, at any number of
+arguments and including arguments that are themselves functions or types.
+
+Every call that no registered form covers resolves to ONE generic method,
+`which(apply!!, Tuple{Any,Any,Vararg{Any}})` (the copy fallback), and a call with
+a `nothing` cache to one method, `which(apply!!, Tuple{Nothing,Any,Vararg{Any}})`.
+A consumer can therefore tell a registered destination-passing form from the
+fallback by comparing `which(apply!!, Tuple{C, typeof(f), argtypes...})` with the
+generic method; ReactiveKernels does, to decide which steps keep a cache buffer.
 
 `LinearAlgebra`, `Random` and `Statistics` are ordinary (strong) dependencies of
 this package — there are **no package extensions**, so every form above is defined

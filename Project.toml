@@ -1,7 +1,7 @@
 name = "MutatingFunctions"
 uuid = "8a4c2d94-4b3b-4f9e-be63-a3c0cd816e3a"
 authors = ["Nikolas Siccha <nikolassiccha@gmail.com>"]
-version = "0.1.1"
+version = "0.1.2"
 
 [deps]
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"

@@ -215,15 +215,15 @@ end
 
     # The signature Julia compiles a call with these argument types into (the
     # method instance a call that is not inlined runs), next to the call's own
-    # concrete signature. `kwbody=true` reads the keyword body the method
-    # forwards a call without keywords to.
-    function compiled_and_called(f, argtypes...; kwbody=false)
-        m = which(f, Tuple{argtypes...})
-        if kwbody
-            body = Base.bodyfunction(m)
-            atype = Tuple{typeof(body), typeof(pairs(NamedTuple())), typeof(f), argtypes...}
-            m = only(methods(body))
+    # concrete signature. `kw=true` reads the `Core.kwcall` method a call with
+    # keywords reaches.
+    function compiled_and_called(f, argtypes...; kw=false)
+        if kw
+            kws = typeof((; s=1))
+            m = which(Core.kwcall, Tuple{kws, typeof(f), argtypes...})
+            atype = Tuple{typeof(Core.kwcall), kws, typeof(f), argtypes...}
         else
+            m = which(f, Tuple{argtypes...})
             atype = Tuple{typeof(f), argtypes...}
         end
         env = ccall(:jl_type_intersection_with_env, Any, (Any, Any), atype, m.sig)[2]
@@ -232,16 +232,16 @@ end
     specialized(f, argtypes...; kwargs...) = ==(compiled_and_called(f, argtypes...; kwargs...)...)
 
     struct Step end            # a callable struct, like a ReactiveKernels step
-    (::Step)(xs...) = first(xs)
+    (::Step)(xs...; kwargs...) = first(xs)
     V, I, M = Vector{Float64}, Vector{Int}, Matrix{Float64}
-    forward(f, args...; kwargs...) = f(args...; kwargs...)   # the spelling the fix replaced
+    forward(f, args...; kwargs...) = f(args...; kwargs...)   # the 0.1.0 spelling
 
     forward_n(f::F, args::Vararg{Any,N}) where {F,N} = f(args...)
-    @testset "control: an `f, args...` forwarder is compiled for widened types" begin
-        @test !specialized(forward, Step, V, I; kwbody=true)   # … Vector{Float64}, Vararg{Any}
+    @testset "control: an ordinary forwarder is compiled for widened types" begin
+        @test !specialized(forward, Step, V, I; kw=true)       # … Vector{Float64}, Vararg{Any}
         @test !specialized(forward, typeof(sum), V)            # f compiled as ::Function
         # `Vararg{Any,N}` alone still compiles a function or type argument as
-        # `::Function` / `::Type`: the reason for the fixed-arity methods
+        # `::Function` / `::Type`: the reason the forwarding methods are generated
         @test !specialized(forward_n, Step, typeof(+), V)
         @test !specialized(forward_n, Step, Type{Float64}, Int)
     end
@@ -249,17 +249,39 @@ end
     # array arguments, and arguments that are themselves functions or types
     arrays(n) = ntuple(k -> isodd(k) ? V : I, n)
     mixed(n) = ntuple(k -> (V, typeof(+), I, Type{Float64}, Float64, typeof(sin), Step, M)[mod1(k, 8)], n)
-    @testset "apply!!(nothing | cache, f, args...) and its keyword body" begin
-        for C in (Nothing, V), F in (Step, typeof(sum)), args in (arrays.(0:10)..., mixed.(1:8)...)
+    @testset "apply!!(nothing | cache, f, args...), with and without keywords" begin
+        for C in (Nothing, V), F in (Step, typeof(sum)), args in (arrays.(0:10)..., mixed.(1:12)...)
             @test specialized(apply!!, C, F, args...)
-            @test specialized(apply!!, C, F, args...; kwbody=true)
+            @test specialized(apply!!, C, F, args...; kw=true)
         end
+    end
+
+    # ReactiveKernels keeps a cache slot for a step only when `apply!!` selects a
+    # registered form for its types, which it tells from the copy fallback by
+    # method identity: `which(apply!!, Tuple{T, typeof(op), argtypes...})` is or
+    # is not `which(apply!!, Tuple{Any,Any,Vararg{Any}})`. 0.1.1's one method per
+    # arity broke that for 1-8 arguments, and its non-allocating AD preparation
+    # threw (snag `apply-0-1-1-nona-d289b9ca`).
+    @testset "every unregistered call resolves to the one generic method" begin
+        generic = which(apply!!, Tuple{Any,Any,Vararg{Any}})
+        nothing_form = which(apply!!, Tuple{Nothing,Any,Vararg{Any}})
+        @test generic !== nothing_form
+        bc = typeof(Base.broadcasted(+, zeros(2), zeros(2)))
+        sub = typeof(view(zeros(3), [1, 2]))
+        for C in (V, M, Float64, bc, sub, Any), F in (Step, typeof(sum), typeof(Base.broadcasted), typeof(view)),
+                args in (arrays.(0:10)..., mixed.(1:12)...)
+            @test which(apply!!, Tuple{C, F, args...}) === generic
+            @test which(apply!!, Tuple{Nothing, F, args...}) === nothing_form
+        end
+        # and a registered form is not it
+        @test which(apply!!, Tuple{V, typeof(zeros), Int}) !== generic
+        @test which(apply!!, Tuple{V, typeof(broadcast), typeof(+), V, V}) !== generic
     end
 
     @testset "registered forms still win over the forwarding methods" begin
         # A representative call for each registered form (type variables at their
         # bound, `Any` as `Float64`, varargs expanded to 1-3 arguments) must still
-        # dispatch to that form, not to a fixed-arity forwarding method.
+        # dispatch to that form, not to a forwarding method.
         bound(t) = t isa TypeVar ? (t.ub === Any ? Float64 : t.ub) : t
         nforms = 0
         for m in methods(apply!!)
@@ -274,17 +296,30 @@ end
             end
         end
         @test nforms >= 20
+        # The keyword forms (`sort`, `cumsum`, …) also win over the generic
+        # `Core.kwcall` method.
+        kws = typeof((; rev=true))
+        generic_kw = which(Core.kwcall, Tuple{kws, typeof(apply!!), Any, Any, Vararg{Any}})
+        @test which(Core.kwcall, Tuple{kws, typeof(apply!!), V, typeof(sort), V}) !== generic_kw
+        @test which(Core.kwcall, Tuple{kws, typeof(apply!!), V, typeof(cumsum), V}) !== generic_kw
     end
 
-    @testset "the fixed-arity methods compute what the Vararg ones do" begin
+    @testset "the generated methods compute what the 0.1.0 methods did" begin
         @test apply!!(nothing, broadcast, +, 1.0, [1.0, 2.0]) == [2.0, 3.0]
         @test apply!!(nothing, convert, Float64, 3) === 3.0
         @test apply!!(nothing, map, sin, [0.0]) == [0.0]
-        @test apply!!(nothing, (xs...) -> sum(xs), 1:9...) == 45   # 9 args: the Vararg method
+        @test apply!!(nothing, (xs...) -> sum(xs), 1:9...) == 45
+        @test apply!!(nothing, () -> 7) == 7
         @test apply!!(nothing, (x; s=1) -> s * x, 2; s=3) == 6
+        @test apply!!(nothing, (x; s=1) -> s * x, 2) == 2
         c = Float64[]
         @test apply!!(c, broadcast, +, 1.0, [1.0, 2.0]) === c && c == [2.0, 3.0]
         @test apply!!(c, (xs...) -> collect(Float64, xs), 1:9...) === c && c == 1.0:9.0
+        @test apply!!(c, (x; s=1) -> s .* x, [1.0, 2.0]; s=3) === c && c == [3.0, 6.0]
+        @test apply!!(c, sort, [3.0, 1.0, 2.0]; rev=true) === c && c == [3.0, 2.0, 1.0]
+        @test apply!!(c, sum, [1.0, 2.0]) === 3.0                  # scalar passthrough
+        @test apply!!(c, sum, [1.0 2.0; 3.0 4.0]; dims=1) == [4.0 6.0]   # shape mismatch passthrough
+        @test_throws MethodError apply!!(c, zeros, 3; nonsense=1)
     end
 
     @testset "registered forms that forward a function" begin
@@ -294,7 +329,7 @@ end
             @test specialized(apply!!, V, typeof(map), typeof(+), ntuple(_ -> V, n)...)
         end
         @test specialized(apply!!, V, typeof(accumulate), typeof(+), V)
-        @test specialized(apply!!, V, typeof(accumulate), typeof(+), V; kwbody=true)
+        @test specialized(apply!!, V, typeof(accumulate), typeof(+), V; kw=true)
     end
 
     @test isempty(Test.detect_ambiguities(MutatingFunctions))
